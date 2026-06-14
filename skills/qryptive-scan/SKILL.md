@@ -12,16 +12,46 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
 1. **Docker preflight.** Run `docker info` (quietly). If Docker is not installed or not
    running, tell the user how to install/start it and STOP. Do not print a traceback.
 
-2. **Pull the scanner image if absent:**
-   `docker image inspect ghcr.io/qryptive/pqc-scanner:v1 >/dev/null 2>&1 || docker pull --platform linux/amd64 ghcr.io/qryptive/pqc-scanner:v1`
-   If the pull fails and the image is not cached (offline), tell the user and STOP.
+2. **Resolve the scanner image, then check for updates WITHOUT auto-applying them.**
+
+   Resolve which image to run:
+   - If `QRYPTIVE_SCANNER_IMAGE` is set, use it **verbatim** and SKIP the update check
+     (this is the reproducible/CI pin, e.g. `ghcr.io/qryptive/pqc-scanner:v1.0.0`).
+   - Otherwise the image is `ghcr.io/qryptive/pqc-scanner:v1` (the moving channel).
+
+   Then:
+   - **If the image is not cached locally** (`docker image inspect "$IMAGE"` fails): pull it once —
+     `docker pull --platform linux/amd64 "$IMAGE"`. If the pull fails (offline), tell the user and STOP.
+   - **If it IS cached AND** the update check is not skipped (no `QRYPTIVE_SCANNER_IMAGE` pin and
+     `QRYPTIVE_SKIP_UPDATE_CHECK` != `1`): compare the local image digest to the remote digest
+     **without downloading layers**:
+     - Local: `docker inspect "$IMAGE" --format '{{index .RepoDigests 0}}'`
+     - Remote: `docker buildx imagetools inspect "$IMAGE" --format '{{.Manifest.Digest}}'`
+       (fallback if `buildx imagetools` is unavailable: `docker manifest inspect "$IMAGE"` and read the
+       top-level digest). If BOTH remote lookups fail (offline), skip silently and run the cached image.
+     - Compare the `sha256:…` values.
+       - **Same** → run the cached image, no prompt.
+       - **Different** → a newer scanner is available. Show the user their current version
+         (`docker inspect "$IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.version"}}'`)
+         and this line, then ASK:
+         ```
+         ℹ️  A newer Qryptive scanner is available. You're on <current version>.
+             What's new: https://github.com/qryptive/claude-skills/releases
+             Update now? [y/N]  (default: keep your current version)
+         ```
+         - On **yes** → `docker pull --platform linux/amd64 "$IMAGE"`, then run the new image.
+         - On **no / no answer** → run the cached image unchanged. Do NOT pull.
+   - **If the update check is skipped** (pin set, or `QRYPTIVE_SKIP_UPDATE_CHECK=1`): run the cached
+     image as-is (never auto-pull).
+
+   NEVER pull a new image without either (a) nothing being cached, or (b) explicit user consent.
 
 3. **Scan the repo (local, no network):**
    ```bash
    docker run --rm --platform linux/amd64 --network none \
      -e SCANNER_DUMP_CONTEXT=true \
      -v "$PWD":/work:ro \
-     ghcr.io/qryptive/pqc-scanner:v1 scan /work
+     "$IMAGE" scan /work
    ```
    `--platform linux/amd64` is REQUIRED — the image is amd64-only; on Apple-Silicon Macs it
    runs under Docker's emulation. Without the flag, `docker pull` fails with

@@ -40,3 +40,14 @@ This repo ships **orchestration only** — how to run the local scanner image an
 ## License
 
 [Apache-2.0](LICENSE)
+
+## Updates & pinning
+
+The scanner image updates **only with your consent**. When you run `/qryptive-scan` and a newer
+scanner is available, it tells you and asks before pulling — your current version keeps running if
+you decline. Nothing updates silently.
+
+- **Pin a version** (reproducible scans / CI): `export QRYPTIVE_SCANNER_IMAGE=ghcr.io/qryptive/pqc-scanner:v1.0.0`
+- **Silence the update check** on the moving channel: `export QRYPTIVE_SKIP_UPDATE_CHECK=1`
+
+Release notes: https://github.com/qryptive/claude-skills/releases

@@ -1,7 +1,7 @@
 {
   "name": "qryptive-pqc",
-  "description": "Scan your repo for quantum-vulnerable cryptography (Python/Java/Go). Fully local — code never leaves your machine. No account required.",
-  "version": "0.1.0",
+  "description": "Scan your repo for quantum-vulnerable cryptography (Python/Java/Go). Fully local \u2014 code never leaves your machine. No account required.",
+  "version": "0.1.1",
   "author": {
     "name": "Qryptive",
     "url": "https://qryptive.ai"
@@ -9,5 +9,11 @@
   "homepage": "https://qryptive.ai",
   "repository": "https://github.com/qryptive/claude-skills",
   "license": "Apache-2.0",
-  "keywords": ["pqc", "post-quantum", "cryptography", "security", "scanner"]
+  "keywords": [
+    "pqc",
+    "post-quantum",
+    "cryptography",
+    "security",
+    "scanner"
+  ]
 }
