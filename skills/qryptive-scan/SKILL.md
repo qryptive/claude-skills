@@ -59,40 +59,50 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
    (In diff mode, Step 2.5 sets `ROOT` to the repo root. In whole-repo mode, `ROOT` defaults to
    `$PWD`. Either way, this step uses whatever `ROOT` is at this point in the flow.)
 
-   Count `.py`, `.pyw`, `.java`, and `.go` files, pruning the same heavy directories the container
-   skips so the number is realistic:
+   Count `.py`, `.pyw`, `.java`, and `.go` files. When inside a git repo (and
+   `QRYPTIVE_SCAN_EXCLUDE_DIRS` is not set), use `git ls-files` so the count honours
+   `.gitignore` and matches what Step 3 will actually scan. Fall back to `find` otherwise.
+
    ```bash
-   N=$(find "$ROOT" \
-       \( -name .git -o -name node_modules -o -name venv -o -name .venv \
-          -o -name __pycache__ -o -name dist -o -name build -o -name .claude \
-          -o -name target -o -name out -o -name vendor -o -name site-packages \
-          -o -name .tox -o -name .gradle \) -prune \
-       -o -type f \( -name '*.py' -o -name '*.pyw' -o -name '*.java' -o -name '*.go' \) -print \
-       2>/dev/null | wc -l | tr -d ' ')
+   if [ -z "$QRYPTIVE_SCAN_EXCLUDE_DIRS" ] && \
+        git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+     # Git-aware count: tracked files + untracked-not-gitignored, honours .gitignore
+     N=$(git -C "$ROOT" ls-files --cached --others --exclude-standard \
+           | grep -cEi '\.(py|pyw|java|go)$' || echo 0)
+     TOP=$(git -C "$ROOT" ls-files --cached --others --exclude-standard \
+             | grep -Ei '\.(py|pyw|java|go)$' \
+             | sed "s|^$ROOT/||" | cut -d/ -f1 | sort | uniq -c | sort -rn | head -10)
+   else
+     # Fallback: filesystem walk pruning heavy dirs (used when not in git or custom excludes set)
+     N=$(find "$ROOT" \
+         \( -name .git -o -name node_modules -o -name venv -o -name .venv \
+            -o -name __pycache__ -o -name dist -o -name build -o -name .claude \
+            -o -name target -o -name out -o -name vendor -o -name site-packages \
+            -o -name .tox -o -name .gradle \) -prune \
+         -o -type f \( -name '*.py' -o -name '*.pyw' -o -name '*.java' -o -name '*.go' \) -print \
+         2>/dev/null | wc -l | tr -d ' ')
+     TOP=$(find "$ROOT" \
+         \( -name .git -o -name node_modules -o -name venv -o -name .venv \
+            -o -name __pycache__ -o -name dist -o -name build -o -name .claude \
+            -o -name target -o -name out -o -name vendor -o -name site-packages \
+            -o -name .tox -o -name .gradle \) -prune \
+         -o -type f \( -name '*.py' -o -name '*.pyw' -o -name '*.java' -o -name '*.go' \) -print \
+         2>/dev/null \
+       | sed "s|^$ROOT/||" | cut -d/ -f1 | sort | uniq -c | sort -rn | head -10)
+   fi
    ```
 
    Report: **"Found N scannable files."**
 
-   When N is large it also helps to surface where the bulk lives. Run a quick top-subdirectory
-   breakdown and include it in the message (so the user can see which directories dominate):
-   ```bash
-   find "$ROOT" \
-       \( -name .git -o -name node_modules -o -name venv -o -name .venv \
-          -o -name __pycache__ -o -name dist -o -name build -o -name .claude \
-          -o -name target -o -name out -o -name vendor -o -name site-packages \
-          -o -name .tox -o -name .gradle \) -prune \
-       -o -type f \( -name '*.py' -o -name '*.pyw' -o -name '*.java' -o -name '*.go' \) -print \
-       2>/dev/null \
-     | sed "s|^$ROOT/||" | cut -d/ -f1 | sort | uniq -c | sort -rn | head -10
-   ```
+   When N is large it also helps to surface where the bulk lives — include the `$TOP`
+   breakdown in the message so the user can see which directories dominate.
 
    **Note:** this magnitude gate applies to the **whole-repo (default) scan**. In diff mode
    (Step 2.5) the scan is already limited to changed files, so this count is a loose upper-bound
    estimate of the whole repo and the threshold warning can be ignored for diff-mode runs.
 
-   **Note:** this host-side count does not apply `QRYPTIVE_SCAN_EXCLUDE_DIRS` (the container
-   enforces it), so the count may be higher than the actual scan scope when that variable is set —
-   it can only over-estimate, never under-warn.
+   **Note:** when `QRYPTIVE_SCAN_EXCLUDE_DIRS` is set the fallback `find` path is used, so the
+   count may be higher than the actual scan scope — it can only over-estimate, never under-warn.
 
    **Threshold: if `N > 5000` AND `QRYPTIVE_SKIP_PREFLIGHT` is not `1`**, warn the user and offer
    these choices before proceeding:
@@ -172,6 +182,17 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
    ```bash
    # Whole-repo (default): MOUNT="$PWD". Diff mode (Step 2.5): MOUNT="$ROOT".
    MOUNT="${ROOT:-$PWD}"
+
+   # Git-aware whole-repo file selection: when in a git repo and no custom exclude dirs are set,
+   # populate QRYPTIVE_SCAN_FILES from git ls-files so .gitignore is honoured automatically.
+   # Skipped when: diff mode already set QRYPTIVE_SCAN_FILES (Step 2.5), or user set
+   # QRYPTIVE_SCAN_EXCLUDE_DIRS (their explicit list takes precedence), or not a git repo.
+   if [ -z "$QRYPTIVE_SCAN_FILES" ] && [ -z "$QRYPTIVE_SCAN_EXCLUDE_DIRS" ] && \
+        git -C "$MOUNT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+     QRYPTIVE_SCAN_FILES=$(git -C "$MOUNT" ls-files --cached --others --exclude-standard \
+                             | grep -Ei '\.(py|pyw|java|go)$' || true)
+   fi
+
    OUT=$(mktemp /tmp/qryptive-scan-result.XXXXXX)
    PROGRESS=$(mktemp /tmp/qryptive-scan-progress.XXXXXX)
    echo "RESULT_FILE=$OUT"
@@ -251,5 +272,6 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
 - This skill NEVER sends source code anywhere. With `QRYPTIVE_API_KEY` set it syncs results (step 6); without a key it may send only a work email, with explicit user consent, to create a free login — source code never leaves the machine in either case.
 - This skill contains NO crypto knowledge — all detection logic lives in the image.
 - **Default directory exclusions:** the scanner automatically excludes common build/tool/IDE dirs — `dist`, `build`, `target`, `out`, `vendor`, `coverage`, `.next`, `.nuxt`, `.tox`, `.gradle`, `.mvn`, `.idea`, `.vscode`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.cache`, `.claude` — so customers see only their source code without any configuration. The permanent floor (`.git`, `node_modules`, `__pycache__`, `venv`, `.venv`, `site-packages`) is always excluded.
-- `QRYPTIVE_SCAN_EXCLUDE_DIRS=<comma-separated dir names>` customizes the exclusion set. Your list **replaces** the defaults (e.g. `QRYPTIVE_SCAN_EXCLUDE_DIRS=tests,spikes` skips `tests/` and `spikes/` but no longer skips `dist/` etc.). The floor dirs are always excluded regardless. Useful when you want to include a default-excluded dir (e.g. a `dist/` with hand-authored crypto source) or add your own heavy dirs. The env var is passed through to the container in Step 3.
+- **`.gitignore` is honoured automatically** in a git repo. In whole-repo mode (default), the skill uses `git ls-files` to build the file list — tracked files plus untracked-not-gitignored files. Gitignored paths (build artefacts, OSS eval corpora, generated output) are never scanned. Diff mode inherits the same behaviour via `git diff`. If git is unavailable, the skill falls back to a filesystem walk with the default excluded dirs.
+- `QRYPTIVE_SCAN_EXCLUDE_DIRS=<comma-separated dir names>` customizes the exclusion set. Setting this **bypasses git-mode** and falls back to a filesystem walk with your list **replacing** the defaults (e.g. `QRYPTIVE_SCAN_EXCLUDE_DIRS=tests,spikes` skips `tests/` and `spikes/` but no longer skips `dist/` etc.). The floor dirs are always excluded regardless. Useful when you want to include a default-excluded dir (e.g. a `dist/` with hand-authored crypto source) or add your own heavy dirs. The env var is passed through to the container in Step 3.
 - `QRYPTIVE_SKIP_PREFLIGHT=1` bypasses the Step 2.4 magnitude warning entirely. Useful for users who always want the full scan and don't need the up-front file-count gate.
