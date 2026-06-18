@@ -209,6 +209,17 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
    in every subsequent poll and read Bash call — do NOT use `$OUT` or `$PROGRESS` variable names
    in later tool calls (they will be empty in a new shell).
 
+   **First, guard against a duplicate concurrent scan.** Before launching, check whether a
+   qryptive-scan container is already running — launching a second one wastes CPU and produces
+   confusing interleaved progress (this happened in a real run: two containers scanned at once):
+   ```bash
+   EXISTING=$(docker ps --filter ancestor="$IMAGE" --format '{{.Names}} {{.Status}}' 2>/dev/null)
+   ```
+   If `$EXISTING` is non-empty, do NOT launch another scan. Tell the user a scan is already in
+   flight (`$EXISTING`), and either resume relaying the existing run's progress/result files (if you
+   noted their literal paths) or ask them to wait for it / `docker stop <name>` first. Only proceed
+   to the `docker run` below when no scan container is running.
+
    Run the scan as a **background Bash task** (use the Bash tool with `run_in_background=true`).
    Define `OUT`/`PROGRESS` and run the `docker run` command **in the same Bash invocation** so the
    redirections see the variables, and redirect stdout to `$OUT` and **stderr to `$PROGRESS`** —
@@ -262,26 +273,41 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
    scanner's per-file pool MUST stay at 1 (shared signal/gate state is not thread-safe; raising it
    produces non-deterministic finding counts). Speed comes from batching, not parallelism.
 
-   **While the background task runs, poll for progress** every 3–5 minutes: read the last line of
-   the progress file using its **literal path** from the `PROGRESS_FILE=...` line printed above
-   (e.g. `tail -n 1 /tmp/qryptive-scan-progress.ab12cd`) and relay it to the user so they can see
-   the scan moving. The scanner emits lines like `found N files to scan` near the start, then
-   `scanned X/Y files...` as it progresses through batches. Keep polling until the background task
-   completes. Do NOT poll more frequently — scans on large repos take 20–60 minutes and
-   sub-minute polling produces noise without adding information.
+   **Waiting for the scan — do NOT busy-poll.** The scan runs as a `run_in_background=true` task,
+   so the harness **re-invokes you automatically when the container exits** — that completion
+   notification is your signal to read the result. You do not need to watch it.
+
+   - **NEVER use `sleep` to wait** (the harness blocks `sleep`-based waiting), and **NEVER** re-run
+     `grep`/`wc -l`/`docker stats`/`tail` on the progress file every turn in a manual poll loop —
+     that produces a continuous stream of noise and adds no information. (Both of these happened in
+     a real run and were the source of the spammy-logs complaint.)
+   - After launching, tell the user **once**: the scan is running in the background and you'll
+     report when it finishes. Then stop and wait for the completion notification.
+   - **Progress visibility (optional, low-frequency):** to surface a stall on a long scan without
+     busy-waiting, you MAY schedule a single heartbeat with `ScheduleWakeup` at a long interval
+     (~1800s). On each fire, read **one** `tail -n 1 <PROGRESS_FILE literal path>` line, relay it,
+     and reschedule. The scanner emits `found N files to scan` near the start, then
+     `scanned X/Y files...` per batch. This is at most one progress line per ~30 min — not a stream.
+   - **If the user explicitly asks "how's the scan going?":** do exactly **one** `tail -n 1` read of
+     the progress file and relay it — a single read, never a loop.
 
    **When the background task completes:**
    - Clean up the file-list temp file (if one was created): `${SCAN_FILES_TMP:+rm -f "$SCAN_FILES_TMP"}`.
      Use the **literal path** from `SCAN_FILES_TMP` if you noted it; otherwise skip this step.
    - Read the result using its **literal path** from the `RESULT_FILE=...` line (e.g.
-     `cat /tmp/qryptive-scan-result.ab12cd`). If the file is empty or not valid JSON, the scan
-     failed (container may have crashed or been OOM-killed). Read the progress file for error
-     details and report a scan failure — do NOT report "no findings / clean repo" when the output
-     file is empty or malformed.
-   - If the result file contains a valid JSON object, proceed to Step 4. The format is:
-     `{ "files_scanned": N, "findings": [...] }`. Each finding carries a repo-relative `file`
-     plus `line`. Stderr may also contain a `results may be incomplete` warning on partial failure
-     — surface this to the user if present.
+     `cat /tmp/qryptive-scan-result.ab12cd`). Interpret it by these three cases — do NOT conflate
+     them:
+     - **Empty, truncated, or not valid JSON** → the container **crashed or was OOM-killed**. Read
+       the progress file for error details and report a **scan failure**. Do NOT report
+       "no findings / clean repo".
+     - **Valid JSON with `files_scanned: 0`** → the scan **succeeded but scanned nothing**. This is
+       NOT a crash or OOM. It almost always means a **wrong mount root** (e.g. you ran from an empty
+       subdirectory). Tell the user the scan succeeded but found 0 files to scan, and suggest
+       re-running from the repo root.
+     - **Valid JSON with `files_scanned > 0`** → proceed to Step 4. The format is
+       `{ "files_scanned": N, "findings": [...] }`. Each finding carries a repo-relative `file`
+       plus `line`. Stderr may also contain a `results may be incomplete` warning on partial failure
+       — surface this to the user if present.
 
 4. **Resolve ambiguous findings locally (you are the LLM).** For any finding whose
    resolution is `unresolved`, use the dumped 5-ring context already in the JSON to determine
@@ -300,8 +326,19 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
    - **If `QRYPTIVE_API_KEY` is set:** POST results to
      `${QRYPTIVE_PLATFORM_URL:-https://app.qryptive.ai}/api/github-action/scan-results` with
      header `X-API-Key: $QRYPTIVE_API_KEY` and body
-     `{repo, branch, commit_sha, files_scanned, findings}`. If it fails, warn but keep the local
-     report — sync is additive.
+     `{repo, branch, commit_sha, files_scanned, findings}`. Capture the HTTP status. The local
+     report is always authoritative — sync is additive — so any failure keeps the local report.
+     Handle failures by status, and do NOT improvise:
+     - **201 Created** → relay the returned `scan_id`; sync confirmed.
+     - **401** (`Invalid or expired API key` / `X-API-Key header required`) → the key is invalid,
+       expired, or revoked. Tell the user to generate a fresh key at
+       `https://app.qryptive.ai/settings/agent-access` and re-export `QRYPTIVE_API_KEY`, then
+       re-run. **Do NOT invent API-key "types"** — there is no "GitHub Action" key type; the
+       endpoint accepts any active org key. **Do NOT probe other endpoints** trying to make it work.
+     - **403** → the key is valid but lacks scope for this org/endpoint. Same remediation (new key
+       from settings). Do not probe.
+     - **5xx / network error / timeout** → transient. Keep the local report and tell the user sync
+       can be retried by re-running the skill.
    - **If `QRYPTIVE_API_KEY` is NOT set:** offer activation. Tell the user, in one sentence, that
      syncing needs a free Qryptive login and that you would send **only their work email** to
      create it — their **source code still never leaves this machine**. Ask for explicit consent.
