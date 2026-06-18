@@ -221,13 +221,22 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
    MOUNT="${ROOT:-$PWD}"
 
    # Git-aware whole-repo file selection: when in a git repo and no custom exclude dirs are set,
-   # populate QRYPTIVE_SCAN_FILES from git ls-files so .gitignore is honoured automatically.
+   # write the file list to a temp file and pass it via QRYPTIVE_SCAN_FILES_PATH + a bind mount.
+   # This avoids the macOS ARG_MAX env-var size limit that kills inline QRYPTIVE_SCAN_FILES
+   # passthrough for repos with 1000+ scannable files (E2BIG / exit 255).
    # Skipped when: diff mode already set QRYPTIVE_SCAN_FILES (Step 2.5), or user set
    # QRYPTIVE_SCAN_EXCLUDE_DIRS (their explicit list takes precedence), or not a git repo.
+   SCAN_FILES_TMP=""
    if [ -z "$QRYPTIVE_SCAN_FILES" ] && [ -z "$QRYPTIVE_SCAN_EXCLUDE_DIRS" ] && \
         git -C "$MOUNT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-     QRYPTIVE_SCAN_FILES=$(git -C "$MOUNT" ls-files --cached --others --exclude-standard \
-                             | grep -Ei '\.(py|pyw|java|go)$' || true)
+     SCAN_FILES_TMP=$(mktemp /tmp/qryptive-scan-files.XXXXXX)
+     git -C "$MOUNT" ls-files --cached --others --exclude-standard \
+       | grep -Ei '\.(py|pyw|java|go)$' > "$SCAN_FILES_TMP" || true
+     # If no scannable files found, drop the temp file (avoid passing an empty list)
+     if [ ! -s "$SCAN_FILES_TMP" ]; then
+       rm -f "$SCAN_FILES_TMP"
+       SCAN_FILES_TMP=""
+     fi
    fi
 
    OUT=$(mktemp /tmp/qryptive-scan-result.XXXXXX)
@@ -237,6 +246,8 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
    docker run --rm --platform linux/amd64 --network none \
      -e SCANNER_DUMP_CONTEXT=true \
      -e MALLOC_ARENA_MAX=2 \
+     ${SCAN_FILES_TMP:+-v "$SCAN_FILES_TMP":/tmp/qryptive-scan-files:ro} \
+     ${SCAN_FILES_TMP:+-e QRYPTIVE_SCAN_FILES_PATH=/tmp/qryptive-scan-files} \
      ${QRYPTIVE_SCAN_FILES:+-e QRYPTIVE_SCAN_FILES="$QRYPTIVE_SCAN_FILES"} \
      ${QRYPTIVE_SCAN_EXCLUDE_DIRS:+-e QRYPTIVE_SCAN_EXCLUDE_DIRS="$QRYPTIVE_SCAN_EXCLUDE_DIRS"} \
      -v "$MOUNT":/work:ro \
@@ -251,14 +262,17 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
    scanner's per-file pool MUST stay at 1 (shared signal/gate state is not thread-safe; raising it
    produces non-deterministic finding counts). Speed comes from batching, not parallelism.
 
-   **While the background task runs, poll for progress** every 60–90 seconds: read the last line of
+   **While the background task runs, poll for progress** every 3–5 minutes: read the last line of
    the progress file using its **literal path** from the `PROGRESS_FILE=...` line printed above
    (e.g. `tail -n 1 /tmp/qryptive-scan-progress.ab12cd`) and relay it to the user so they can see
    the scan moving. The scanner emits lines like `found N files to scan` near the start, then
    `scanned X/Y files...` as it progresses through batches. Keep polling until the background task
-   completes.
+   completes. Do NOT poll more frequently — scans on large repos take 20–60 minutes and
+   sub-minute polling produces noise without adding information.
 
    **When the background task completes:**
+   - Clean up the file-list temp file (if one was created): `${SCAN_FILES_TMP:+rm -f "$SCAN_FILES_TMP"}`.
+     Use the **literal path** from `SCAN_FILES_TMP` if you noted it; otherwise skip this step.
    - Read the result using its **literal path** from the `RESULT_FILE=...` line (e.g.
      `cat /tmp/qryptive-scan-result.ab12cd`). If the file is empty or not valid JSON, the scan
      failed (container may have crashed or been OOM-killed). Read the progress file for error
