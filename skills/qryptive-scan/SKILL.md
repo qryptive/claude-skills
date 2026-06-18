@@ -23,24 +23,61 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
    - **If the image is not cached locally** (`docker image inspect "$IMAGE"` fails): pull it once —
      `docker pull --platform linux/amd64 "$IMAGE"`. If the pull fails (offline), tell the user and STOP.
    - **If it IS cached AND** the update check is not skipped (no `QRYPTIVE_SCANNER_IMAGE` pin and
-     `QRYPTIVE_SKIP_UPDATE_CHECK` != `1`): compare the local image digest to the remote digest
-     **without downloading layers**:
-     - Local: `docker inspect "$IMAGE" --format '{{index .RepoDigests 0}}'`
-     - Remote: `docker buildx imagetools inspect "$IMAGE" --format '{{.Manifest.Digest}}'`
-       (fallback if `buildx imagetools` is unavailable: `docker manifest inspect "$IMAGE"` and read the
-       top-level digest). If BOTH remote lookups fail (offline), skip silently and run the cached image.
-     - Compare the `sha256:…` values.
-       - **Same** → run the cached image, no prompt.
-       - **Different** → a newer scanner is available. Show the user their current version
-         (`docker inspect "$IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.version"}}'`)
-         and this line, then ASK:
-         ```
-         ℹ️  A newer Qryptive scanner is available. You're on <current version>.
-             What's new: https://github.com/qryptive/claude-skills/releases
-             Update now? [y/N]  (default: keep your current version)
-         ```
-         - On **yes** → `docker pull --platform linux/amd64 "$IMAGE"`, then run the new image.
-         - On **no / no answer** → run the cached image unchanged. Do NOT pull.
+     `QRYPTIVE_SKIP_UPDATE_CHECK` != `1`): run the following bash snippet verbatim, then act **only
+     on the `VERDICT=` token** it prints. Never conclude "up to date" by eyeballing raw digest text —
+     the token is the only authoritative signal.
+
+     ```bash
+     IMAGE="ghcr.io/qryptive/pqc-scanner:v1"
+
+     # Local: index digest of the pulled image. Filter by this repo — an image tagged from
+     # multiple registries can have >1 RepoDigest; using index 0 is unsafe.
+     LOCAL=$(docker inspect "$IMAGE" --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null \
+             | grep '^ghcr.io/qryptive/pqc-scanner@' | head -1 | sed 's/.*@//')
+
+     # Remote: top-level OCI index digest. printf-wrap defeats buildx's bare-template
+     # default-formatter trap (a bare '{{.Manifest.Digest}}' triggers a full human dump, not a
+     # clean digest). NEVER fall back to 'docker manifest inspect' — it returns the per-platform
+     # child manifest digest, which can never equal the index digest → permanent false UPDATE_AVAILABLE.
+     REMOTE=$(docker buildx imagetools inspect "$IMAGE" --format '{{ printf "%s" .Manifest.Digest }}' 2>/dev/null \
+              | grep -m1 -Eo 'sha256:[a-f0-9]{64}')
+     # Defense-in-depth: if the printf path yields nothing (very old buildx), anchor on the
+     # top-level "Digest:" label in the human dump (first match, label-anchored, stable).
+     if [ -z "$REMOTE" ]; then
+       REMOTE=$(docker buildx imagetools inspect "$IMAGE" 2>/dev/null \
+                | grep -m1 '^Digest:' | grep -Eo 'sha256:[a-f0-9]{64}')
+     fi
+
+     if [ -z "$REMOTE" ] || [ -z "$LOCAL" ]; then
+       VERDICT="CHECK_FAILED"
+     elif [ "$LOCAL" = "$REMOTE" ]; then
+       VERDICT="UP_TO_DATE"
+     else
+       VERDICT="UPDATE_AVAILABLE"
+     fi
+     echo "LOCAL=$LOCAL"
+     echo "REMOTE=$REMOTE"
+     echo "VERDICT=$VERDICT"
+     ```
+
+     Act on the `VERDICT=` token:
+     - **`UP_TO_DATE`** → run the cached image, no prompt.
+     - **`CHECK_FAILED`** → run the cached image, but print one visible line so the failure is not
+       silent (a silent check-failure would allow future format changes to permanently suppress the
+       update prompt without any indication):
+       ```
+       ℹ️  Couldn't check for scanner updates (offline or registry unreachable); using your cached image.
+       ```
+     - **`UPDATE_AVAILABLE`** → a newer scanner is available. Show the user their current version
+       (`docker inspect "$IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.version"}}'`)
+       and ASK:
+       ```
+       ℹ️  A newer Qryptive scanner is available. You're on <current version>.
+           What's new: https://github.com/qryptive/claude-skills/releases
+           Update now? [y/N]  (default: keep your current version)
+       ```
+       - On **yes** → `docker pull --platform linux/amd64 "$IMAGE"`, then run the new image.
+       - On **no / no answer** → run the cached image unchanged. Do NOT pull.
    - **If the update check is skipped** (pin set, or `QRYPTIVE_SKIP_UPDATE_CHECK=1`): run the cached
      image as-is (never auto-pull).
 
