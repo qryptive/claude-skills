@@ -305,15 +305,27 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
    PROGRESS=$(mktemp /tmp/qryptive-scan-progress.XXXXXX)
    echo "RESULT_FILE=$OUT"
    echo "PROGRESS_FILE=$PROGRESS"
-   docker run --rm --platform linux/amd64 --network none \
-     -e SCANNER_DUMP_CONTEXT=true \
-     -e MALLOC_ARENA_MAX=2 \
-     ${SCAN_FILES_TMP:+-v "$SCAN_FILES_TMP":/tmp/qryptive-scan-files:ro} \
-     ${SCAN_FILES_TMP:+-e QRYPTIVE_SCAN_FILES_PATH=/tmp/qryptive-scan-files} \
-     ${QRYPTIVE_SCAN_FILES:+-e QRYPTIVE_SCAN_FILES="$QRYPTIVE_SCAN_FILES"} \
-     ${QRYPTIVE_SCAN_EXCLUDE_DIRS:+-e QRYPTIVE_SCAN_EXCLUDE_DIRS="$QRYPTIVE_SCAN_EXCLUDE_DIRS"} \
-     -v "$MOUNT":/work:ro \
-     "$IMAGE" scan /work >"$OUT" 2>"$PROGRESS"
+
+   # Build the docker args as an ARRAY, not inline ${VAR:+...} conditional expansions.
+   # zsh (a common default shell) does NOT word-split unquoted parameter expansions, so an inline
+   # ${SCAN_FILES_TMP:+-v "$X":/path:ro} fuses "-v" and the path into ONE argument → docker exit 125.
+   # An array expanded via "${DOCKER_ARGS[@]}" splits identically in bash AND zsh.
+   DOCKER_ARGS=(run --rm --platform linux/amd64 --network none
+     -e SCANNER_DUMP_CONTEXT=true
+     -e MALLOC_ARENA_MAX=2)
+   if [ -n "$SCAN_FILES_TMP" ]; then
+     DOCKER_ARGS+=(-v "$SCAN_FILES_TMP":/tmp/qryptive-scan-files:ro
+                   -e QRYPTIVE_SCAN_FILES_PATH=/tmp/qryptive-scan-files)
+   fi
+   if [ -n "$QRYPTIVE_SCAN_FILES" ]; then
+     DOCKER_ARGS+=(-e QRYPTIVE_SCAN_FILES="$QRYPTIVE_SCAN_FILES")
+   fi
+   if [ -n "$QRYPTIVE_SCAN_EXCLUDE_DIRS" ]; then
+     DOCKER_ARGS+=(-e QRYPTIVE_SCAN_EXCLUDE_DIRS="$QRYPTIVE_SCAN_EXCLUDE_DIRS")
+   fi
+   DOCKER_ARGS+=(-v "$MOUNT":/work:ro "$IMAGE" scan /work)
+
+   docker "${DOCKER_ARGS[@]}" >"$OUT" 2>"$PROGRESS"
    ```
 
    `--platform linux/amd64` is REQUIRED — the image is amd64-only; on Apple-Silicon Macs it
@@ -343,8 +355,11 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
      the progress file and relay it — a single read, never a loop.
 
    **When the background task completes:**
-   - Clean up the file-list temp file (if one was created): `${SCAN_FILES_TMP:+rm -f "$SCAN_FILES_TMP"}`.
-     Use the **literal path** from `SCAN_FILES_TMP` if you noted it; otherwise skip this step.
+   - Clean up the file-list temp file (if one was created). `$SCAN_FILES_TMP` is gone in a new shell,
+     so use the **literal path** you noted from the `git ls-files` step (e.g.
+     `rm -f /tmp/qryptive-scan-files.ab12cd`). If no temp file was created (diff mode, custom
+     excludes, or non-git), skip this step. (Do NOT use `${SCAN_FILES_TMP:+rm -f …}` — under zsh that
+     fuses into a single bogus command.)
    - Read the result using its **literal path** from the `RESULT_FILE=...` line (e.g.
      `cat /tmp/qryptive-scan-result.ab12cd`). Interpret it by these three cases — do NOT conflate
      them:
