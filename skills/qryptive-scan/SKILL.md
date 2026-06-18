@@ -104,9 +104,11 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
    >    or specify a subfolder as the mount root.
    > 2. **Diff mode** — `/qryptive-scan diff` scans only the files changed on the current branch
    >    (usually tens or hundreds of files, not thousands).
-   > 3. **Exclude heavy dirs** — set `QRYPTIVE_SCAN_EXCLUDE_DIRS=<comma,separated,dir,names>`
-   >    (e.g. vendored test corpora, generated code directories) and re-run. The container honors
-   >    this env var and will skip those directory names wherever they appear under the scan root.
+   > 3. **Customize excluded dirs** — the scanner already excludes a default set of build/tool/IDE
+   >    dirs (`dist`, `build`, `target`, `vendor`, `coverage`, `.next`, `.gradle`, `.claude`, etc.).
+   >    To use a different set, set `QRYPTIVE_SCAN_EXCLUDE_DIRS=<comma,separated,dir,names>` and
+   >    re-run — your list **replaces** the defaults (`.git`, `node_modules`, `venv`, `__pycache__`
+   >    are always excluded regardless). Example: `QRYPTIVE_SCAN_EXCLUDE_DIRS=tests,spikes`.
    > 4. **Proceed with the full scan** — it will stream progress so you can see it moving.
 
    Wait for the user's choice before proceeding.
@@ -248,5 +250,6 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
 ## Rules
 - This skill NEVER sends source code anywhere. With `QRYPTIVE_API_KEY` set it syncs results (step 6); without a key it may send only a work email, with explicit user consent, to create a free login — source code never leaves the machine in either case.
 - This skill contains NO crypto knowledge — all detection logic lives in the image.
-- `QRYPTIVE_SCAN_EXCLUDE_DIRS=<comma-separated dir names>` skips additional directories inside the scan root (e.g. vendored test corpora, generated-code subtrees). Useful for huge monorepos where a known-clean subtree dominates the file count. The env var is passed through to the container in Step 3 and honored by the scanner.
+- **Default directory exclusions:** the scanner automatically excludes common build/tool/IDE dirs — `dist`, `build`, `target`, `out`, `vendor`, `coverage`, `.next`, `.nuxt`, `.tox`, `.gradle`, `.mvn`, `.idea`, `.vscode`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.cache`, `.claude` — so customers see only their source code without any configuration. The permanent floor (`.git`, `node_modules`, `__pycache__`, `venv`, `.venv`, `site-packages`) is always excluded.
+- `QRYPTIVE_SCAN_EXCLUDE_DIRS=<comma-separated dir names>` customizes the exclusion set. Your list **replaces** the defaults (e.g. `QRYPTIVE_SCAN_EXCLUDE_DIRS=tests,spikes` skips `tests/` and `spikes/` but no longer skips `dist/` etc.). The floor dirs are always excluded regardless. Useful when you want to include a default-excluded dir (e.g. a `dist/` with hand-authored crypto source) or add your own heavy dirs. The env var is passed through to the container in Step 3.
 - `QRYPTIVE_SKIP_PREFLIGHT=1` bypasses the Step 2.4 magnitude warning entirely. Useful for users who always want the full scan and don't need the up-front file-count gate.
