@@ -19,6 +19,14 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
    `qryptive-scan` skill is published and ASKS the user whether to update before proceeding —
    it never silently upgrades or downgrades anything itself.
 
+   **Run this check on EVERY invocation of this skill — including a repeat scan later in the same
+   conversation, on the same or a different repo.** Versions can change between invocations (a
+   `/plugin update` the user ran mid-conversation, a new publish landing), and the check itself is
+   a cheap local `ls` + one time-boxed network GET. **Never skip it by reasoning "I already checked
+   this earlier in this session/conversation" or "I already have a verified-current version"** —
+   that reasoning is not authorized anywhere in this skill and defeats the entire point of a
+   per-invocation check. The ONLY valid reasons to skip are the two explicit env-var opt-outs below.
+
    **Skip this step entirely** when `QRYPTIVE_SKIP_UPDATE_CHECK=1` OR `QRYPTIVE_SCANNER_IMAGE` is
    set (CI/reproducible pins shouldn't nag). Otherwise run this snippet verbatim and act **only on
    the `SKILL_VERDICT=` token** — never by eyeballing version strings. It is fail-open: any error
@@ -71,6 +79,10 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
        be collected) → proceed to Step 2 exactly as before, on the current version.
 
 2. **Resolve the scanner image, then check for updates WITHOUT auto-applying them.**
+
+   Like Step 1.5, this check MUST run on every invocation — never skip it because you recall
+   checking earlier in the same conversation. Only the explicit conditions below (the
+   `QRYPTIVE_SCANNER_IMAGE` pin, or the image not being cached) change what runs.
 
    Resolve which image to run:
    - If `QRYPTIVE_SCANNER_IMAGE` is set, use it **verbatim** and SKIP the update check
