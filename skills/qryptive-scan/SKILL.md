@@ -441,9 +441,12 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
      environment. Do NOT claim it is set, do NOT claim you are "syncing," and do NOT retry the curl.
      Tell the user (do not improvise beyond this): the key must be exported where Claude Code's Bash
      tool can see it — most durable is the `env` block of `.claude/settings.local.json`
-     (`"QRYPTIVE_API_KEY": "qk_..."`), OR exported in the terminal BEFORE launching `claude`, OR
-     added to `~/.zshenv`. Running `export …` inside a Claude prompt does NOT persist. Then treat
-     this run as the "not set" case below (results stayed fully local).
+     (`"QRYPTIVE_API_KEY": "pqc_org_..."`), OR exported in the terminal BEFORE launching `claude`, OR
+     added to `~/.zshenv`. **Explicitly warn against `~/.zshrc`** — it is only sourced by an
+     *interactive* shell and will NOT be visible to Claude Code's Bash tool even after `source`-ing
+     it and relaunching `claude`; this is the single most common mistake, since `~/.zshrc` is the
+     dotfile most people reach for by habit. Running `export …` inside a Claude prompt does NOT
+     persist either. Then treat this run as the "not set" case below (results stayed fully local).
    - **Otherwise (key present) — handle the HTTP status, and do NOT improvise:** The local report is
      always authoritative — sync is additive — so any failure keeps the local report.
      - **201 Created** → relay the returned `scan_id`; sync confirmed.
@@ -451,9 +454,12 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
        expired, or revoked — OR, for `X-API-Key header required` specifically, the header arrived
        empty (the key is not visible to Claude Code's Bash env — re-check the three places above).
        Otherwise, tell the user to generate a fresh key at
-       `https://app.qryptive.ai/settings/agent-access` and re-export `QRYPTIVE_API_KEY`, then
-       re-run. **Do NOT invent API-key "types"** — there is no "GitHub Action" key type; the
-       endpoint accepts any active org key. **Do NOT probe other endpoints** trying to make it work.
+       `https://app.qryptive.ai/settings/agent-access` (Create Agent Key → name it → tick any one
+       "Tools to grant access" box — scope choice doesn't matter for scan sync → Create Key → copy
+       the `pqc_org_...` value) and re-export `QRYPTIVE_API_KEY` (see the `~/.zshenv`-not-`~/.zshrc`
+       note above), then re-run. **Do NOT invent API-key "types"** — there is no "GitHub Action" key
+       type; the endpoint accepts any active org key regardless of scope. **Do NOT probe other
+       endpoints** trying to make it work.
      - **403** → the key is valid but lacks scope for this org/endpoint. Same remediation (new key
        from settings). Do not probe.
      - **5xx / network error / timeout** → transient. Keep the local report and tell the user sync
@@ -471,8 +477,14 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
        ```
        ℹ️  Results stayed fully local — nothing was sent anywhere.
 
-       To sync later: get a key at https://app.qryptive.ai/settings/agent-access,
-       run  export QRYPTIVE_API_KEY=qk_...  and re-run /qryptive-scan.
+       To sync later: get a key at https://app.qryptive.ai/settings/agent-access
+       (name it anything, tick any one "Tools to grant access" box — scope choice
+       doesn't matter for scan sync — then Create Key and copy the pqc_org_... value),
+       run  export QRYPTIVE_API_KEY=pqc_org_...  and re-run /qryptive-scan.
+
+       IMPORTANT: put the export somewhere Claude Code's Bash tool actually sees it —
+       ~/.zshenv or .claude/settings.local.json's env block, NOT ~/.zshrc (interactive-only,
+       invisible to tool calls even after sourcing it).
        ```
 
 ## Rules
