@@ -1,6 +1,6 @@
 ---
 name: qryptive-scan
-description: Scan the current repo for quantum-vulnerable cryptography (Python/Java/Go). Fully local — code never leaves the machine. No account required.
+description: Scan the current repo for quantum-vulnerable cryptography (Python/Java/Go/JavaScript/TypeScript). Fully local — code never leaves the machine. No account required.
 ---
 
 # Qryptive Scan
@@ -147,7 +147,9 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
    (In diff mode, Step 2.5 sets `ROOT` to the repo root. In whole-repo mode, `ROOT` defaults to
    `$PWD`. Either way, this step uses whatever `ROOT` is at this point in the flow.)
 
-   Count `.py`, `.pyw`, `.java`, and `.go` files. When inside a git repo (and
+   Count `.py`, `.pyw`, `.java`, `.go`, `.js`, `.jsx`, `.ts`, `.tsx`, `.mjs`, and `.cjs` files
+   (excluding `.d.ts`/`.d.mts`/`.d.cts` type stubs and `.min.js`/`.min.mjs`/`.min.cjs` bundles,
+   which the scanner skips). When inside a git repo (and
    `QRYPTIVE_SCAN_EXCLUDE_DIRS` is not set), use `git ls-files` so the count honours
    `.gitignore` and matches what Step 3 will actually scan. Fall back to `find` otherwise.
 
@@ -156,9 +158,12 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
         git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
      # Git-aware count: tracked files + untracked-not-gitignored, honours .gitignore
      N=$(git -C "$ROOT" ls-files --cached --others --exclude-standard \
-           | grep -cEi '\.(py|pyw|java|go)$' || echo 0)
+           | grep -Ei '\.(py|pyw|java|go|js|jsx|ts|tsx|mjs|cjs)$' \
+           | grep -vEi '(\.d\.(ts|mts|cts)|\.min\.(js|mjs|cjs))$' \
+           | wc -l | tr -d ' ' || echo 0)
      TOP=$(git -C "$ROOT" ls-files --cached --others --exclude-standard \
-             | grep -Ei '\.(py|pyw|java|go)$' \
+             | grep -Ei '\.(py|pyw|java|go|js|jsx|ts|tsx|mjs|cjs)$' \
+             | grep -vEi '(\.d\.(ts|mts|cts)|\.min\.(js|mjs|cjs))$' \
              | sed "s|^$ROOT/||" | cut -d/ -f1 | sort | uniq -c | sort -rn | head -10)
    else
      # Fallback: filesystem walk pruning heavy dirs (used when not in git or custom excludes set)
@@ -167,14 +172,22 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
             -o -name __pycache__ -o -name dist -o -name build -o -name .claude \
             -o -name target -o -name out -o -name vendor -o -name site-packages \
             -o -name .tox -o -name .gradle \) -prune \
-         -o -type f \( -name '*.py' -o -name '*.pyw' -o -name '*.java' -o -name '*.go' \) -print \
+         -o -type f \( -iname '*.py' -o -iname '*.pyw' -o -iname '*.java' -o -iname '*.go' \
+            -o -iname '*.js' -o -iname '*.jsx' -o -iname '*.ts' -o -iname '*.tsx' \
+            -o -iname '*.mjs' -o -iname '*.cjs' \) \
+            ! -iname '*.d.ts' ! -iname '*.d.mts' ! -iname '*.d.cts' \
+            ! -iname '*.min.js' ! -iname '*.min.mjs' ! -iname '*.min.cjs' -print \
          2>/dev/null | wc -l | tr -d ' ')
      TOP=$(find "$ROOT" \
          \( -name .git -o -name node_modules -o -name venv -o -name .venv \
             -o -name __pycache__ -o -name dist -o -name build -o -name .claude \
             -o -name target -o -name out -o -name vendor -o -name site-packages \
             -o -name .tox -o -name .gradle \) -prune \
-         -o -type f \( -name '*.py' -o -name '*.pyw' -o -name '*.java' -o -name '*.go' \) -print \
+         -o -type f \( -iname '*.py' -o -iname '*.pyw' -o -iname '*.java' -o -iname '*.go' \
+            -o -iname '*.js' -o -iname '*.jsx' -o -iname '*.ts' -o -iname '*.tsx' \
+            -o -iname '*.mjs' -o -iname '*.cjs' \) \
+            ! -iname '*.d.ts' ! -iname '*.d.mts' ! -iname '*.d.cts' \
+            ! -iname '*.min.js' ! -iname '*.min.mjs' ! -iname '*.min.cjs' -print \
          2>/dev/null \
        | sed "s|^$ROOT/||" | cut -d/ -f1 | sort | uniq -c | sort -rn | head -10)
    fi
@@ -233,7 +246,9 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
    CHANGED=$( { git diff --name-only --diff-filter=d "$BASE"...HEAD;
                 git diff --name-only --diff-filter=d --cached;
                 git diff --name-only --diff-filter=d; } | sort -u )
-   QRYPTIVE_SCAN_FILES=$(printf '%s\n' "$CHANGED" | grep -Ei '\.(py|pyw|java|go)$' || true)
+   QRYPTIVE_SCAN_FILES=$(printf '%s\n' "$CHANGED" \
+                           | grep -Ei '\.(py|pyw|java|go|js|jsx|ts|tsx|mjs|cjs)$' \
+                           | grep -vEi '(\.d\.(ts|mts|cts)|\.min\.(js|mjs|cjs))$' || true)
    ```
    - If `git rev-parse --show-toplevel` fails (not a git repo) or `$BASE` cannot be resolved, tell the
      user diff mode is unavailable and offer a whole-repo scan instead — do not run the container.
@@ -293,7 +308,8 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
         git -C "$MOUNT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
      SCAN_FILES_TMP=$(mktemp /tmp/qryptive-scan-files.XXXXXX)
      git -C "$MOUNT" ls-files --cached --others --exclude-standard \
-       | grep -Ei '\.(py|pyw|java|go)$' > "$SCAN_FILES_TMP" || true
+       | grep -Ei '\.(py|pyw|java|go|js|jsx|ts|tsx|mjs|cjs)$' \
+       | grep -vEi '(\.d\.(ts|mts|cts)|\.min\.(js|mjs|cjs))$' > "$SCAN_FILES_TMP" || true
      # If no scannable files found, drop the temp file (avoid passing an empty list)
      if [ ! -s "$SCAN_FILES_TMP" ]; then
        rm -f "$SCAN_FILES_TMP"
