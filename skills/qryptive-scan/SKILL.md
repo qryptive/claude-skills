@@ -12,11 +12,12 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
 1. **Docker preflight.** Run `docker info` (quietly). If Docker is not installed or not
    running, tell the user how to install/start it and STOP. Do not print a traceback.
 
-1.5. **Skill self-update check (non-blocking — nudge only).**
+1.5. **Skill self-update check (asks before continuing on a stale version).**
 
    The Step 2 check covers the scanner *image*, NOT this skill itself. A user can run a stale
    plugin indefinitely while the image reports up-to-date. This step detects when a newer
-   `qryptive-scan` skill is published and nudges the user — it NEVER blocks or alters the scan.
+   `qryptive-scan` skill is published and ASKS the user whether to update before proceeding —
+   it never silently upgrades or downgrades anything itself.
 
    **Skip this step entirely** when `QRYPTIVE_SKIP_UPDATE_CHECK=1` OR `QRYPTIVE_SCANNER_IMAGE` is
    set (CI/reproducible pins shouldn't nag). Otherwise run this snippet verbatim and act **only on
@@ -52,16 +53,22 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
    - **`SKILL_UP_TO_DATE`** → proceed silently.
    - **`SKILL_CHECK_FAILED`** → proceed silently (offline, dev run, or unknown install layout —
      never nag on a failed check; the scan is fully functional regardless).
-   - **`SKILL_UPDATE_AVAILABLE`** → print exactly this nudge (substituting the two versions), then
-     **continue the scan unchanged** — do NOT block, and do NOT attempt to self-update (the plugin
-     can't be hot-swapped mid-run):
+   - **`SKILL_UPDATE_AVAILABLE`** → print exactly this (substituting the two versions) and WAIT for
+     the user's answer — do NOT auto-continue:
      ```
      ℹ️  A newer Qryptive scan skill is available (you're on <INSTALLED>, latest <REMOTE>).
          Update:  /plugin marketplace update qryptive
                   /plugin update qryptive-pqc@qryptive
          What's new: https://github.com/qryptive/claude-skills/releases
-         Continuing this scan with your current version.
+
+         Update now, or continue this scan with your current version? [continue/update]
      ```
+     - **"update"** (or any clear intent to update first) → print the two `/plugin` commands
+       above again as the concrete next step, then STOP — do NOT proceed to Step 2 or run the
+       scan this invocation. The plugin can't be hot-swapped mid-run, so the user re-invokes
+       `/qryptive-scan` after updating.
+     - **"continue"** (or any clear intent to proceed, or no answer in a context where one can't
+       be collected) → proceed to Step 2 exactly as before, on the current version.
 
 2. **Resolve the scanner image, then check for updates WITHOUT auto-applying them.**
 
@@ -463,4 +470,4 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
 - **`.gitignore` is honoured automatically** in a git repo. In whole-repo mode (default), the skill uses `git ls-files` to build the file list — tracked files plus untracked-not-gitignored files. Gitignored paths (build artefacts, OSS eval corpora, generated output) are never scanned. Diff mode inherits the same behaviour via `git diff`. If git is unavailable, the skill falls back to a filesystem walk with the default excluded dirs.
 - `QRYPTIVE_SCAN_EXCLUDE_DIRS=<comma-separated dir names>` customizes the exclusion set. Setting this **bypasses git-mode** and falls back to a filesystem walk with your list **replacing** the defaults (e.g. `QRYPTIVE_SCAN_EXCLUDE_DIRS=tests,spikes` skips `tests/` and `spikes/` but no longer skips `dist/` etc.). The floor dirs are always excluded regardless. Useful when you want to include a default-excluded dir (e.g. a `dist/` with hand-authored crypto source) or add your own heavy dirs. The env var is passed through to the container in Step 3.
 - `QRYPTIVE_SKIP_PREFLIGHT=1` bypasses the Step 2.4 magnitude warning entirely. Useful for users who always want the full scan and don't need the up-front file-count gate.
-- `QRYPTIVE_SKIP_UPDATE_CHECK=1` skips BOTH the Step 1.5 skill self-update check AND the Step 2 scanner-image update check. Setting `QRYPTIVE_SCANNER_IMAGE` (a reproducible/CI pin) also skips both. Both checks are nudge-only and fail-open — they never block or alter the scan.
+- `QRYPTIVE_SKIP_UPDATE_CHECK=1` skips BOTH the Step 1.5 skill self-update check AND the Step 2 scanner-image update check. Setting `QRYPTIVE_SCANNER_IMAGE` (a reproducible/CI pin) also skips both. Both checks are fail-open on detection failure (offline/unknown layout never blocks the scan); when an update is genuinely available, both ask the user before acting — Step 1.5 asks whether to update the skill (and stops if so) before continuing, Step 2 asks before pulling a newer scanner image.
