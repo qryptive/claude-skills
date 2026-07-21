@@ -405,15 +405,33 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
      changed vs `<base>`, and that the PQ-readiness summary covers only those files — not the whole repo.
 
 6. **Optional sync / activation.**
-   - **If `QRYPTIVE_API_KEY` is set:** POST results to
-     `${QRYPTIVE_PLATFORM_URL:-https://app.qryptive.ai}/api/github-action/scan-results` with
-     header `X-API-Key: $QRYPTIVE_API_KEY` and body
-     `{repo, branch, commit_sha, files_scanned, findings}`. Capture the HTTP status. The local
-     report is always authoritative — sync is additive — so any failure keeps the local report.
-     Handle failures by status, and do NOT improvise:
+   - **First, verify the key is actually present in the shell that will run the curl.** Run the
+     presence check and the POST in ONE Bash command — do NOT split them across calls. Env vars do
+     NOT persist between Claude Code Bash calls (each call is a fresh shell), and a var the user
+     exported mid-session — in their terminal OR by asking you to run `export` in a Bash call — will
+     be EMPTY here. So a separate "is it set?" check does not prove the curl's own shell has it:
+     ```
+     if [ -z "${QRYPTIVE_API_KEY:-}" ]; then echo "KEY_ABSENT_IN_SHELL"; else
+       curl -sS -w '\nHTTP_STATUS:%{http_code}\n' -X POST \
+         "${QRYPTIVE_PLATFORM_URL:-https://app.qryptive.ai}/api/github-action/scan-results" \
+         -H "X-API-Key: $QRYPTIVE_API_KEY" -H 'Content-Type: application/json' \
+         -d @<body.json>   # body = {repo, branch, commit_sha, files_scanned, findings}
+     fi
+     ```
+   - **If the output is `KEY_ABSENT_IN_SHELL`:** the key is NOT visible to Claude Code's Bash
+     environment. Do NOT claim it is set, do NOT claim you are "syncing," and do NOT retry the curl.
+     Tell the user (do not improvise beyond this): the key must be exported where Claude Code's Bash
+     tool can see it — most durable is the `env` block of `.claude/settings.local.json`
+     (`"QRYPTIVE_API_KEY": "qk_..."`), OR exported in the terminal BEFORE launching `claude`, OR
+     added to `~/.zshenv`. Running `export …` inside a Claude prompt does NOT persist. Then treat
+     this run as the "not set" case below (results stayed fully local).
+   - **Otherwise (key present) — handle the HTTP status, and do NOT improvise:** The local report is
+     always authoritative — sync is additive — so any failure keeps the local report.
      - **201 Created** → relay the returned `scan_id`; sync confirmed.
      - **401** (`Invalid or expired API key` / `X-API-Key header required`) → the key is invalid,
-       expired, or revoked. Tell the user to generate a fresh key at
+       expired, or revoked — OR, for `X-API-Key header required` specifically, the header arrived
+       empty (the key is not visible to Claude Code's Bash env — re-check the three places above).
+       Otherwise, tell the user to generate a fresh key at
        `https://app.qryptive.ai/settings/agent-access` and re-export `QRYPTIVE_API_KEY`, then
        re-run. **Do NOT invent API-key "types"** — there is no "GitHub Action" key type; the
        endpoint accepts any active org key. **Do NOT probe other endpoints** trying to make it work.
