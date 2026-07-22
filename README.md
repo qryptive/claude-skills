@@ -1,6 +1,6 @@
 # Qryptive PQC skills for Claude Code
 
-Find quantum-vulnerable cryptography in your codebase — **Python, Java, and Go** — without leaving your editor.
+Find quantum-vulnerable cryptography in your codebase — **Python, Java, Go, and JavaScript/TypeScript** — without leaving your editor.
 
 The scan runs **fully locally** in a sandboxed container. Your source code never leaves your machine, and **no account is required**.
 
@@ -24,10 +24,12 @@ Claude scans the current repo and reports quantum-vulnerable cryptography split 
 The scan is free and local forever. If you want to sync results to the Qryptive dashboard (and track your org's quantum posture over time), the skill will offer to set you up — or you can grab a key directly at **https://app.qryptive.ai/settings/agent-access**, then:
 
 ```
-export QRYPTIVE_API_KEY=qk_...
+export QRYPTIVE_API_KEY=pqc_org_...
 ```
 
 and re-run `/qryptive-scan`. The key lives only in your environment; Qryptive never sees your source code on a scan.
+
+**New to this?** Follow the step-by-step walkthrough (with a picture) for generating a key and putting it where Claude Code can actually see it: **[Getting your API key →](skills/qryptive-scan/docs/API_KEY_SETUP.md)**
 
 ## Requirements
 
