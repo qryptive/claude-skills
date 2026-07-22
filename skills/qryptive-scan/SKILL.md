@@ -485,6 +485,9 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
        IMPORTANT: put the export somewhere Claude Code's Bash tool actually sees it —
        ~/.zshenv or .claude/settings.local.json's env block, NOT ~/.zshrc (interactive-only,
        invisible to tool calls even after sourcing it).
+
+       Full walkthrough with a picture:
+       https://github.com/qryptive/claude-skills/blob/main/skills/qryptive-scan/docs/API_KEY_SETUP.md
        ```
 
 ## Rules
