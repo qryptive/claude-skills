@@ -1,7 +1,7 @@
 {
   "name": "qryptive-pqc",
-  "description": "Scan your repo for quantum-vulnerable cryptography (Python/Java/Go). Fully local \u2014 code never leaves your machine. No account required.",
-  "version": "0.1.16",
+  "description": "Find quantum-vulnerable cryptography in your repo (Python, Java, Go, JavaScript, TypeScript). Runs fully locally in a sandboxed container; your source code never leaves your machine. A free one-time email sign-in is required, and each run checks in without sending code, file names or results. Optional dashboard sync.",
+  "version": "0.1.17",
   "author": {
     "name": "Qryptive",
     "url": "https://qryptive.ai"

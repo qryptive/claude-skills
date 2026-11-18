@@ -1,8 +1,26 @@
 # Getting your Qryptive API key
 
 `/qryptive-scan` always runs **fully locally** — your source code never leaves your machine,
-with or without a key. An API key is only needed if you want to **sync your scan results** to
-the Qryptive dashboard afterward. This is entirely optional.
+regardless of which credential below you have. An API key is only needed if you want to **sync
+your scan results** to the Qryptive dashboard afterward. This is entirely optional.
+
+## Two different credentials — which one do you have?
+
+This skill involves **two separate credentials**, and "my key isn't working" means something
+different depending on which one you mean:
+
+- **Scanner key** (`qsk_...`) — created automatically the first time you run `/qryptive-scan`,
+  through a free email sign-in. It lives at
+  `${XDG_CONFIG_HOME:-$HOME/.config}/qryptive/scanner-key` and is what unlocks running the
+  scanner itself. If check-in reports the key was rejected, or you never completed the sign-in
+  prompt, this is the credential to look at — just re-run `/qryptive-scan` and follow the
+  sign-in flow again; there's no manual setup for this one.
+- **API key** (`pqc_org_...`) — the one this whole page is about. Optional, created by hand at
+  [app.qryptive.ai/settings/agent-access](https://app.qryptive.ai/settings/agent-access), and set
+  as `QRYPTIVE_API_KEY` in your environment. It does **not** unlock scanning — scanning already
+  works without it — it only syncs results to the dashboard afterward. If scans run fine but
+  results aren't showing up on the dashboard, this is the credential to check, and the rest of
+  this page walks through it.
 
 ## 1. Open the Agent Access page
 

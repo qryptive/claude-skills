@@ -8,7 +8,7 @@
     {
       "name": "qryptive-pqc",
       "source": "./",
-      "description": "Find quantum-vulnerable cryptography in your repo in 30 seconds. Runs fully locally in a sandboxed container \u2014 your source code never leaves your machine. No account required; optional dashboard sync.",
+      "description": "Find quantum-vulnerable cryptography in your repo (Python, Java, Go, JavaScript, TypeScript). Runs fully locally in a sandboxed container; your source code never leaves your machine. A free one-time email sign-in is required, and each run checks in without sending code, file names or results. Optional dashboard sync.",
       "version": "0.1.0",
       "author": {
         "name": "Qryptive",
@@ -26,5 +26,5 @@
       ]
     }
   ],
-  "version": "0.0.16"
+  "version": "0.0.17"
 }

@@ -1,11 +1,13 @@
 ---
 name: qryptive-scan
-description: Scan the current repo for quantum-vulnerable cryptography (Python/Java/Go/JavaScript/TypeScript). Fully local — code never leaves the machine. No account required.
+description: Scan the current repo for quantum-vulnerable cryptography (Python/Java/Go/JavaScript/TypeScript). Fully local — your code never leaves the machine. A free sign-in with your email is required; each run afterward just checks in — never your code, file names, or results.
 ---
 
 # Qryptive Scan
 
-Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API key.**
+Detect quantum-vulnerable cryptography locally. **Read-only.** The scan container itself never
+touches the network (`--network none`, exactly as before) — signing in and checking in happen on
+the host, outside the container, before it runs.
 
 ## Steps
 
@@ -275,6 +277,185 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
    - Otherwise, in Step 3 mount `$ROOT` (not `$PWD`) and pass `-e QRYPTIVE_SCAN_FILES="$QRYPTIVE_SCAN_FILES"`.
    - The scan reads **whole files**, not just changed lines — a changed file is scanned in full.
 
+2.9. **Sign in (first run) and check in (every run).**
+
+   The scan container's `scan` subcommand is gated behind a short-lived signed pass — it never
+   makes a network call itself, but it refuses to run without one. This step gets that pass by
+   signing you in once (free, email-based) and then checking in before every run to refresh it.
+   Nothing here runs inside the container; it is all host-side `curl`, and the container stays
+   `--network none` exactly as before.
+
+   **Local storage** (created once, kept between runs):
+   ```bash
+   CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/qryptive"
+   (umask 077; mkdir -p "$CONFIG_DIR") 2>/dev/null
+   chmod 700 "$CONFIG_DIR" 2>/dev/null
+   ```
+   Three files live there: `scanner-key` (your signed-in scanner key), `scan-pass` (the cached
+   signed pass), and `signin-device-code` (present only while a sign-in is mid-flight, deleted
+   once it resolves).
+
+   **Base URL**: `${QRYPTIVE_PLATFORM_URL:-https://app.qryptive.ai}` — the SAME default Step 6's
+   sync logic uses below. **Key resolution order**: the `QRYPTIVE_SCANNER_KEY` env var if set,
+   else the `scanner-key` file.
+
+   **Absolute rule, non-negotiable: never print the scanner key, the device code, or the pass to
+   Bash output or anywhere else that would land in the visible conversation.** Print only short
+   status markers — `SIGNED_IN account_kind=...`, `CHECKIN_OK`, `CHECKIN_REJECTED`,
+   `CHECKIN_UNREACHABLE_USING_CACHE`, etc. — never the values.
+
+   **Every Bash call that reads one of these three files must read it in the SAME call that uses
+   it.** Step 6 below already documents why: env vars and shell variables do not persist between
+   Claude Code Bash calls (each is a fresh shell), so reading a secret in one call and referencing
+   a shell variable from it in a later call silently uses an empty value. Apply that same rule to
+   the scanner key and the pass here.
+
+   **Check whether a key already exists** (prints only a presence marker, never the key):
+   ```bash
+   CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/qryptive"
+   KEY="${QRYPTIVE_SCANNER_KEY:-}"
+   [ -z "$KEY" ] && [ -f "$CONFIG_DIR/scanner-key" ] && KEY=$(cat "$CONFIG_DIR/scanner-key")
+   if [ -z "$KEY" ]; then echo "NEEDS_SIGNIN"; else echo "HAVE_KEY"; fi
+   ```
+
+   **If `NEEDS_SIGNIN` — sign-in flow:**
+   1. Tell the user, in one sentence, exactly what this records: their email once, right now, to
+      sign them in for free, and then a record every time the scanner runs afterward — never their
+      code, file names, or results. Ask for explicit consent and their email address.
+   2. Validate the email **locally** and, if it passes, start the sign-in in the SAME Bash call —
+      a simple anchored pattern is enough for validation (no `jq`, no assumption `python3` is
+      present), and doing both in one call means the email is typed into the transcript only once
+      instead of once for validation and again for the POST. Do not print `$RESP` itself, only the
+      derived status/user code:
+      ```bash
+      EMAIL="the address the user gave"
+      if ! printf '%s' "$EMAIL" | grep -Eq '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'; then
+        echo "INVALID_EMAIL"
+      else
+        CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/qryptive"
+        BASE="${QRYPTIVE_PLATFORM_URL:-https://app.qryptive.ai}"
+        RESP=$(curl -sS --max-time 20 -X POST "$BASE/api/auth/scanner-signin/start" \
+          -H 'Content-Type: application/json' -d "{\"email\":\"$EMAIL\"}")
+        DEVICE_CODE=$(printf '%s' "$RESP" | grep -o '"device_code"[[:space:]]*:[[:space:]]*"[^"]*"' | sed -E 's/.*"([^"]*)"$/\1/')
+        USER_CODE=$(printf '%s' "$RESP" | grep -o '"user_code"[[:space:]]*:[[:space:]]*"[^"]*"' | sed -E 's/.*"([^"]*)"$/\1/')
+        if [ -z "$DEVICE_CODE" ]; then
+          echo "SIGNIN_START_FAILED"
+        else
+          printf '%s' "$DEVICE_CODE" > "$CONFIG_DIR/signin-device-code"
+          chmod 600 "$CONFIG_DIR/signin-device-code"
+          echo "SIGNIN_STARTED user_code=$USER_CODE"
+        fi
+      fi
+      ```
+      On `INVALID_EMAIL`, ask once more for a corrected address; on a second failure, treat it as
+      decline (see the STOP condition below).
+      On `SIGNIN_START_FAILED` (the request never got a device code back — a network problem or
+      the server being briefly unreachable), tell the user plainly that starting sign-in failed,
+      most likely a connectivity issue, and offer to try again; this is worth a couple of retries
+      but don't loop on it silently — if it keeps failing, suggest they check their network and
+      try again later. On success, relay to the user: "Check your inbox at `<email>` and confirm
+      code `<user_code>`."
+   3. **Poll for approval — one Bash call, looping internally, budget 240 seconds.** The Bash
+      tool's own default per-call timeout is 120 seconds, which is SHORTER than this loop's own
+      240-second deadline and would kill the call before the script gets to decide it's given up.
+      **This specific Bash call must be invoked with an explicit timeout override of at least
+      250000 (milliseconds)** — comfortably longer than the loop's internal deadline — so the
+      harness never cuts it off first:
+      ```bash
+      CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/qryptive"
+      BASE="${QRYPTIVE_PLATFORM_URL:-https://app.qryptive.ai}"
+      DEVICE_CODE=$(cat "$CONFIG_DIR/signin-device-code" 2>/dev/null)
+      DEADLINE=$(( $(date +%s) + 240 ))
+      STATUS="pending"
+      while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+        RESP=$(curl -sS --max-time 20 -X POST "$BASE/api/scanner/signin/poll" \
+          -H 'Content-Type: application/json' -d "{\"device_code\":\"$DEVICE_CODE\"}")
+        STATUS=$(printf '%s' "$RESP" | grep -o '"status"[[:space:]]*:[[:space:]]*"[^"]*"' | sed -E 's/.*"([^"]*)"$/\1/')
+        if [ "$STATUS" = "approved" ]; then
+          SCANNER_KEY=$(printf '%s' "$RESP" | grep -Eo 'qsk_[A-Za-z0-9_-]{43}' | head -1)
+          ACCOUNT_KIND=$(printf '%s' "$RESP" | grep -o '"account_kind"[[:space:]]*:[[:space:]]*"[^"]*"' | sed -E 's/.*"([^"]*)"$/\1/')
+          if [ -n "$SCANNER_KEY" ]; then
+            printf '%s' "$SCANNER_KEY" > "$CONFIG_DIR/scanner-key"
+            chmod 600 "$CONFIG_DIR/scanner-key"
+            rm -f "$CONFIG_DIR/signin-device-code"
+            echo "SIGNED_IN account_kind=$ACCOUNT_KIND"
+          else
+            echo "SIGNIN_APPROVED_NO_KEY"
+          fi
+          break
+        elif [ "$STATUS" = "denied" ] || [ "$STATUS" = "expired" ] || [ "$STATUS" = "already_claimed" ]; then
+          rm -f "$CONFIG_DIR/signin-device-code"
+          echo "SIGNIN_$(printf '%s' "$STATUS" | tr '[:lower:]' '[:upper:]')"
+          break
+        fi
+        sleep 5
+      done
+      [ "$STATUS" = "pending" ] || [ "$STATUS" = "unknown" ] || [ -z "$STATUS" ] && echo "SIGNIN_STILL_PENDING"
+      ```
+      On `SIGNIN_STILL_PENDING`, tell the user plainly it's still waiting, ask if they've clicked
+      Confirm yet, and offer to poll again — a fresh Bash call, another up-to-240s window — rather
+      than giving up.
+   4. On `SIGNED_IN`, continue below to the check-in flow.
+   5. On `SIGNIN_APPROVED_NO_KEY` (the server said the sign-in was approved, but no key could be
+      found in its response — this shouldn't happen if the server is behaving correctly): tell the
+      user sign-in was approved but something went wrong on the server side handing back the key,
+      and offer to start over from step 1. Don't retry this one silently — if it happens twice in
+      a row, tell the user this looks like a server-side problem and suggest they try again later
+      or contact support.
+   6. On `SIGNIN_DENIED` / `SIGNIN_EXPIRED` / `SIGNIN_ALREADY_CLAIMED`, tell the user plainly and
+      offer to start over from step 1. **If the user declines consent in step 1, or gives up after
+      a retry, STOP with:** "The scanner needs a free sign-in to run; nothing was sent."
+
+   **Check-in flow (runs every time, once a key exists):**
+   ```bash
+   CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/qryptive"
+   BASE="${QRYPTIVE_PLATFORM_URL:-https://app.qryptive.ai}"
+   KEY="${QRYPTIVE_SCANNER_KEY:-}"
+   [ -z "$KEY" ] && [ -f "$CONFIG_DIR/scanner-key" ] && KEY=$(cat "$CONFIG_DIR/scanner-key")
+   # $IMAGE from Step 2's own shell is gone in this fresh call — re-derive it the same way.
+   IMAGE="${QRYPTIVE_SCANNER_IMAGE:-ghcr.io/qryptive/pqc-scanner:v1}"
+   # Same OCI version-label mechanism Step 2's update check already uses.
+   SCANNER_VERSION=$(docker inspect "$IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.version"}}' 2>/dev/null)
+   if [ -n "$SCANNER_VERSION" ]; then
+     CHECKIN_BODY=$(printf '{"client":"skill","scanner_version":"%s"}' "$SCANNER_VERSION")
+   else
+     CHECKIN_BODY='{"client":"skill"}'
+   fi
+   RESP=$(curl -sS --max-time 20 -w '\nHTTP_STATUS:%{http_code}\n' -X POST "$BASE/api/scanner/checkin" \
+     -H "X-Scanner-Key: $KEY" -H 'Content-Type: application/json' -d "$CHECKIN_BODY")
+   HTTP=$(printf '%s' "$RESP" | grep -o 'HTTP_STATUS:[0-9]*' | cut -d: -f2)
+   case "$HTTP" in
+     200)
+       PASS=$(printf '%s' "$RESP" | grep -o '"pass"[[:space:]]*:[[:space:]]*"[^"]*"' | sed -E 's/.*"([^"]*)"$/\1/')
+       if [ -n "$PASS" ]; then
+         printf '%s' "$PASS" > "$CONFIG_DIR/scan-pass"; chmod 600 "$CONFIG_DIR/scan-pass"
+         echo "CHECKIN_OK"
+       else
+         echo "CHECKIN_OK_NO_PASS"
+       fi
+       ;;
+     401)
+       rm -f "$CONFIG_DIR/scanner-key"
+       echo "CHECKIN_REJECTED"
+       ;;
+     *)
+       echo "CHECKIN_UNREACHABLE_USING_CACHE"
+       ;;
+   esac
+   ```
+   - **200 (`CHECKIN_OK`)** → the cached pass is fresh; proceed to Step 3.
+   - **200 with no pass extracted (`CHECKIN_OK_NO_PASS`)** → the server accepted the check-in but
+     its response didn't contain a usable pass — this shouldn't happen if the server is behaving
+     correctly. Tell the user the check-in succeeded but something went wrong reading the response,
+     and try the check-in once more. If it happens again, tell the user this looks like a
+     server-side problem and suggest they try again later or contact support — don't loop on this
+     beyond one retry.
+   - **401 (`CHECKIN_REJECTED`)** → the key was revoked or invalid. Tell the user, then fall back
+     into the sign-in flow above (their key file is already deleted).
+   - **429 / 5xx / timeout (`CHECKIN_UNREACHABLE_USING_CACHE`)** → transient. **Keep any existing
+     pass file as-is** (do not delete it — the scan gate itself checks expiry) and continue to
+     Step 3 anyway; do not abort the whole skill run over a transient check-in failure.
+
 3. **Scan the repo (local, no network) — streaming progress.**
 
    Tell the user the scan is starting. Create two temp files — one for the JSON results and one for
@@ -358,9 +539,18 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
    if [ -n "$QRYPTIVE_SCAN_EXCLUDE_DIRS" ]; then
      DOCKER_ARGS+=(-e QRYPTIVE_SCAN_EXCLUDE_DIRS="$QRYPTIVE_SCAN_EXCLUDE_DIRS")
    fi
+
+   # Read Step 2.9's cached pass in THIS SAME call and pass it through by NAME (no "="value" —
+   # `-e QRYPTIVE_SCAN_PASS` alone copies the shell's current value), so the pass itself never
+   # appears as a literal in the argument list or any log of this command.
+   QRYPTIVE_SCAN_PASS="$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/qryptive/scan-pass" 2>/dev/null)"
+   export QRYPTIVE_SCAN_PASS
+   DOCKER_ARGS+=(-e QRYPTIVE_SCAN_PASS)
+
    DOCKER_ARGS+=(-v "$MOUNT":/work:ro "$IMAGE" scan /work)
 
    docker "${DOCKER_ARGS[@]}" >"$OUT" 2>"$PROGRESS"
+   echo "EXIT_CODE=$?" >> "$PROGRESS"
    ```
 
    `--platform linux/amd64` is REQUIRED — the image is amd64-only; on Apple-Silicon Macs it
@@ -395,6 +585,23 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
      `rm -f /tmp/qryptive-scan-files.ab12cd`). If no temp file was created (diff mode, custom
      excludes, or non-git), skip this step. (Do NOT use `${SCAN_FILES_TMP:+rm -f …}` — under zsh that
      fuses into a single bogus command.)
+   - **First, check the scan's own exit code** — read the last `EXIT_CODE=` line from the
+     **progress file's literal path** (e.g. `grep EXIT_CODE= /tmp/qryptive-scan-progress.ab12cd |
+     tail -1`). Codes 20/21/22 mean the free sign-in check gate refused the run, NOT a scan crash —
+     handle these BEFORE looking at the result file, or they get misdiagnosed as "crashed / OOM":
+     - **20** (no pass and no key at all) → tell the user plainly the scanner couldn't check in and
+       has no saved pass; they need to be online and re-run `/qryptive-scan`.
+     - **21** (pass invalid) → delete the pass file (its literal path under
+       `${XDG_CONFIG_HOME:-$HOME/.config}/qryptive/scan-pass`), re-run Step 2.9's check-in curl
+       ONCE, then retry the scan ONCE more. If it still fails, stop and report — never loop.
+     - **22** (pass expired) → tell the user their saved pass expired while they were offline; they
+       need to be online and re-run.
+     - Never retry any of these in an unbounded loop. Note: an **older cached image (pre-1.1.0,
+       before this gate existed)** simply ignores `QRYPTIVE_SCAN_PASS` and scans as it always did —
+       that's fine; usage was already recorded by the check-in step regardless of what the image
+       does with the pass.
+     - Any other exit code (0, or a scan-internal failure code unrelated to the gate) falls through
+       to the JSON-based interpretation below.
    - Read the result using its **literal path** from the `RESULT_FILE=...` line (e.g.
      `cat /tmp/qryptive-scan-result.ab12cd`). Interpret it by these three cases — do NOT conflate
      them:
@@ -414,6 +621,10 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
    resolution is `unresolved`, use the dumped 5-ring context already in the JSON to determine
    the algorithm/crypto-object. If you cannot determine it confidently, leave it `unresolved`
    — never guess. Tag each with `resolution_source` ∈ {deterministic, llm, unresolved}.
+   **Token findings are the exception**: a finding with `finding_type: token` (a JWT, JWE or SAML
+   usage) carries its facts, including an `unresolved` algorithm, in `asset_metadata.token`. Report
+   it exactly as given and never infer, resolve or "improve" its algorithm — the scanner reads that
+   algorithm only from a literal or a constant and says `unresolved` when it cannot.
 
 5. **Report.** Present:
    - Crypto findings vs. asset inventory (split by `finding_type`).
@@ -424,6 +635,10 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
      changed vs `<base>`, and that the PQ-readiness summary covers only those files — not the whole repo.
 
 6. **Optional sync / activation.**
+
+   `QRYPTIVE_API_KEY` here is a **different credential from the scanner key** Step 2.9 creates
+   during sign-in — the scanner key unlocks scanning; this optional org-level API key additionally
+   syncs results to the dashboard. Don't conflate the two.
    - **First, verify the key is actually present in the shell that will run the curl.** Run the
      presence check and the POST in ONE Bash command — do NOT split them across calls. Env vars do
      NOT persist between Claude Code Bash calls (each call is a fresh shell), and a var the user
@@ -464,34 +679,30 @@ Detect quantum-vulnerable cryptography locally. **Read-only. No network. No API 
        from settings). Do not probe.
      - **5xx / network error / timeout** → transient. Keep the local report and tell the user sync
        can be retried by re-running the skill.
-   - **If `QRYPTIVE_API_KEY` is NOT set:** offer activation. Tell the user, in one sentence, that
-     syncing needs a free Qryptive login and that you would send **only their work email** to
-     create it — their **source code still never leaves this machine**. Ask for explicit consent.
-     - **On consent + a work email:** POST
-       `${QRYPTIVE_PLATFORM_URL:-https://app.qryptive.ai}/api/onboarding/request` with JSON
-       `{"email": "<their email>", "source": "cli-scan"}`. Then relay the server's `message`
-       verbatim (corporate domains get an instant one-click login link; personal-email domains
-       are told a work email grants instant access or the team will follow up). If the POST fails
-       or times out, warn and print the fallback block below.
-     - **On decline, an invalid email after one re-prompt, or any failure:** print exactly:
+   - **If `QRYPTIVE_API_KEY` is NOT set:** you already have a free account from Step 2.9's sign-in
+     — there is no separate onboarding step here. Just print exactly:
        ```
-       ℹ️  Results stayed fully local — nothing was sent anywhere.
+       ℹ️  Results stayed fully local — nothing beyond the scan check-in was sent anywhere.
 
-       To sync later: get a key at https://app.qryptive.ai/settings/agent-access
-       (name it anything, tick any one "Tools to grant access" box — scope choice
-       doesn't matter for scan sync — then Create Key and copy the pqc_org_... value),
-       run  export QRYPTIVE_API_KEY=pqc_org_...  and re-run /qryptive-scan.
+       To sync scan results to a dashboard: get an API key at
+       https://app.qryptive.ai/settings/agent-access (name it anything, tick any one
+       "Tools to grant access" box — scope choice doesn't matter for scan sync — then
+       Create Key and copy the pqc_org_... value), run  export QRYPTIVE_API_KEY=pqc_org_...
+       and re-run /qryptive-scan.
 
        IMPORTANT: put the export somewhere Claude Code's Bash tool actually sees it —
        ~/.zshenv or .claude/settings.local.json's env block, NOT ~/.zshrc (interactive-only,
        invisible to tool calls even after sourcing it).
+
+       Sign in to the dashboard at https://app.qryptive.ai with the same email you used for
+       the scanner sign-in to see your scan history there.
 
        Full walkthrough with a picture:
        https://github.com/qryptive/claude-skills/blob/main/skills/qryptive-scan/docs/API_KEY_SETUP.md
        ```
 
 ## Rules
-- This skill NEVER sends source code anywhere. With `QRYPTIVE_API_KEY` set it syncs results (step 6); without a key it may send only a work email, with explicit user consent, to create a free login — source code never leaves the machine in either case.
+- This skill NEVER sends source code anywhere. It sends your email once, with explicit consent, to sign you in for free (Step 2.9); on every run after that, it sends only the scanner key, which client is running (`skill`), and the scanner version, to check in. Nothing else leaves the machine unless you separately opt into the org-key dashboard sync in the (still-optional) sync step.
 - This skill contains NO crypto knowledge — all detection logic lives in the image.
 - **Default directory exclusions:** the scanner automatically excludes common build/tool/IDE dirs — `dist`, `build`, `target`, `out`, `vendor`, `coverage`, `.next`, `.nuxt`, `.tox`, `.gradle`, `.mvn`, `.idea`, `.vscode`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.cache`, `.claude` — so customers see only their source code without any configuration. The permanent floor (`.git`, `node_modules`, `__pycache__`, `venv`, `.venv`, `site-packages`) is always excluded.
 - **`.gitignore` is honoured automatically** in a git repo. In whole-repo mode (default), the skill uses `git ls-files` to build the file list — tracked files plus untracked-not-gitignored files. Gitignored paths (build artefacts, OSS eval corpora, generated output) are never scanned. Diff mode inherits the same behaviour via `git diff`. If git is unavailable, the skill falls back to a filesystem walk with the default excluded dirs.
