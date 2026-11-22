@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "hooks": {
+    "afterFileEdit": [
+      {
+        "command": "sh -c 'g=$1; shift; if [ ! -f \"$g\" ] || ! command -v python3 >/dev/null 2>&1; then echo \"Qryptive guard: check did NOT run: python3 or the guard ($g) is missing. Your edits were not checked.\" >&2; exit 0; fi; python3 \"$g\" \"$@\" || { echo \"Qryptive guard: check did NOT run: the guard stopped unexpectedly. Your edits were not checked.\" >&2; exit 0; }' qryptive-guard \"__QRYPTIVE_GUARD__\" record --format cursor"
+      }
+    ],
+    "stop": [
+      {
+        "command": "sh -c 'g=$1; shift; if [ ! -f \"$g\" ] || ! command -v python3 >/dev/null 2>&1; then echo \"Qryptive guard: check did NOT run: python3 or the guard ($g) is missing. Your edits were not checked.\" >&2; exit 0; fi; python3 \"$g\" \"$@\" || { echo \"Qryptive guard: check did NOT run: the guard stopped unexpectedly. Your edits were not checked.\" >&2; exit 0; }' qryptive-guard \"__QRYPTIVE_GUARD__\" check --format cursor"
+      }
+    ]
+  }
+}

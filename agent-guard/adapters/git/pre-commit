@@ -1,0 +1,15 @@
+#!/bin/sh
+# qryptive-guard
+# Qryptive agent edit guard: checks what is staged before each commit. Nothing leaves the machine.
+# Written by `qryptive_guard.py install git`; remove it with `qryptive_guard.py uninstall git`.
+GUARD="__QRYPTIVE_GUARD__"
+strict() { grep -Eq '"strict_commit"[[:space:]]*:[[:space:]]*true' .qryptive-guard.json 2>/dev/null; }
+if [ -f "$GUARD" ] && [ -r "$GUARD" ] && command -v python3 >/dev/null 2>&1; then
+  python3 "$GUARD" check --staged; rc=$?
+  case $rc in 0|2) exit $rc ;; 3) strict && exit 3 ;; esac
+  echo "Qryptive guard: check did NOT run: the guard stopped unexpectedly (exit $rc). This commit was not checked." >&2
+else
+  echo "Qryptive guard: check did NOT run: python3 or $GUARD is missing or unreadable. This commit was not checked." >&2
+fi
+strict && { echo "The commit is blocked because strict_commit is on in .qryptive-guard.json." >&2; exit 3; }
+exit 0

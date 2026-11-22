@@ -1,0 +1,28 @@
+{
+  "description": "Qryptive agent edit guard: records each file the agent edits and checks the cryptography in them at the end of every turn. Nothing leaves the machine.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'g=$1; shift; if [ ! -f \"$g\" ] || ! command -v python3 >/dev/null 2>&1; then echo \"Qryptive guard: check did NOT run: python3 or the guard ($g) is missing. Your edits were not checked.\" >&2; exit 0; fi; python3 \"$g\" \"$@\" || { echo \"Qryptive guard: check did NOT run: the guard stopped unexpectedly. Your edits were not checked.\" >&2; exit 0; }' qryptive-guard \"${CLAUDE_PLUGIN_ROOT}/agent-guard/qryptive_guard.py\" record",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'g=$1; shift; if [ ! -f \"$g\" ] || ! command -v python3 >/dev/null 2>&1; then echo \"Qryptive guard: check did NOT run: python3 or the guard ($g) is missing. Your edits were not checked.\" >&2; exit 0; fi; python3 \"$g\" \"$@\" || { echo \"Qryptive guard: check did NOT run: the guard stopped unexpectedly. Your edits were not checked.\" >&2; exit 0; }' qryptive-guard \"${CLAUDE_PLUGIN_ROOT}/agent-guard/qryptive_guard.py\" check --format claude-code",
+            "timeout": 660
+          }
+        ]
+      }
+    ]
+  }
+}
